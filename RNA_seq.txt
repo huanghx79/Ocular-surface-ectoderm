@@ -1,0 +1,27 @@
+### RNA-seq
+# Alignment and tpm calculation
+for i in `cat samplefile | cut -f 1 | tail -n +2`; do
+cat <<EOF >${i}.trim.star.rsem.sh
+#!/bin/bash
+#SBATCH -J ${i}
+#SBATCH -o ${i}_trim.star.rsem.out
+#SBATCH -N 1
+#SBATCH -x node1
+#SBATCH --cpus-per-task=20
+
+mkdir -p ${i} 
+trimmomatic PE -phred33 ${i}/${i}_raw_1.fq.gz ${i}/${i}_raw_2.fq.gz ${i}/${i}_1_paired.fq.gz ${i}/${i}_1_unpaired.fq.gz ${i}/${i}_2_paired.fq.gz ${i}/${i}_2_unpaired.fq.gz ILLUMINACLIP:./P5-P7adaptors.fa:2:30:10 LEADING:20 TRAILING:20 MINLEN:36 
+STAR --runMode alignReads --runThreadN 20 --readFilesIn ${i}/${i}_1_paired.fq.gz ${i}/${i}_2_paired.fq.gz --readFilesCommand zcat --genomeDir /data/Reference_Index/star_GRCh37 --outFileNamePrefix ${i}/${i}. --outFilterType BySJout --outSAMattributes NH HI AS NM MD --outFilterMultimapNmax 20 --alignSJoverhangMin 8 --alignSJDBoverhangMin 1 --alignIntronMin 20 --alignIntronMax 1000000 --alignMatesGapMax 1000000 --outFilterMatchNminOverLread 0.66 --outFilterScoreMinOverLread 0.66 --winAnchorMultimapNmax 70 --seedSearchStartLmax 45 --outSAMattrIHstart 0 --outSAMstrandField intronMotif --outSAMtype BAM Unsorted --quantMode TranscriptomeSAM GeneCounts --outReadsUnmapped Fastx
+rsem-calculate-expression --paired-end --strandedness none -p 20 --alignments --no-bam-output ${i}/${i}.Aligned.toTranscriptome.out.bam /data/Reference_Index/rsem_GRCh37/rsem_GRCh37 ${i}/${i}.tpm
+EOF
+done
+
+# Differentially expressed genes analysis
+source activate RNAseq
+/data/Software/DESeq2.sh -f merge.readcounts -s samplefile -P 0.05
+awk 'BEGIN{OFS=FS="\t"}ARGIND==1{symbol[$1]=$2;}ARGIND==2{if(FNR==1) print "symbol",$0; else {print symbol[$1],$0};}' GRCh37.idMap.txt Differentially_expressed_genes.xls > DEG.symbol.xls
+for i in `cat samplefile | tail -n +2 | cut -f1`; do cp ../${i}/${i}.tpm.genes.results .; done
+##add tpm header
+for i in `cat samplefile | tail -n +2 | cut -f1`; do sed -i "s/TPM/${i}.tpm/" ${i}.tpm.genes.results; done
+paste `find . -name '*.tpm.genes.results'` | awk 'BEGIN{OFS=FS="\t" }{line=$1; for(i=2;i<=NF;i++) if(i%7==6) line=line"\t"$i; print line;}' > merge.tpm.xls
+awk 'BEGIN{OFS=FS="\t"}ARGIND==1{symbol[$1]=$2;}ARGIND==2{if(FNR==1) print "symbol",$0; else {print symbol[$1],$0};}' GRCh37.idMap.txt merge.tpm.xls > merge.tpm.symbol.xls
