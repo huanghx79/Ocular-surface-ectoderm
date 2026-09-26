@@ -1,0 +1,41 @@
+
+### CHIP-seq
+for i in `cat CHIP-samplefile`; do
+cat <<EOF >${i}.CHIP.sh
+#!/bin/bash
+#SBATCH -J ${i}
+#SBATCH -o ${i}_PE.out
+#SBATCH -N 1
+#SBATCH --cpus-per-task=20
+
+mkdir -p ${i}
+
+bwa mem -M -t 20 /data/Reference_Index/bwa_GRCh37/bwa_GRCh37 ${i}/${i}_R1.fq.gz ${i}/${i}_R2.fq.gz  >${i}/${i}.sam
+
+grep -v 'chrGL.*' ${i}/${i}.sam | grep -v 'chrMT' >${i}/${i}.final.sam
+
+samtools view -F4 -q 1 -b ${i}/${i}.final.sam -o ${i}/${i}.final.bam
+
+samtools sort -@ 20 -o ${i}/${i}.sort.bam ${i}/${i}.final.bam
+
+picard MarkDuplicates INPUT=${i}/${i}.sort.bam OUTPUT=${i}/${i}.rmdup.bam METRICS_FILE=${i}/${i}.rmdup.log CREATE_INDEX=true REMOVE_DUPLICATES=true
+
+#For narrow histone marks
+macs2 callpeak -t ${i}/${i}.rmdup.bam -g 2700000000 --outdir ${i} -n ${i}_PE_input.call -f BAMPE -B --SPMR -q 0.001 --call-summits --fix-bimodal --seed 11521 --extsize 200 -c input.rmdup.bam
+
+#For broad histone marks
+srun macs2 callpeak -t ${i}/${i}.final.bam -g 2700000000 --outdir ${i}/${i} -n ${i}.call -f BAMPE -B --SPMR --fix-bimodal --extsize 500 --broad --broad-cutoff 0.01 --seed 11521 -c input.rmdup.bam
+
+# Peak annotation
+awk 'BEGIN{OFS=FS="\t"}{print \$4,\$1,\$2,\$3,"+"}' ${i}/${i}_PE.call_peaks.narrowPeak  >${i}/${i}.homer_peaks.tmp 
+annotatePeaks.pl ${i}/${i}.homer_peaks.tmp hg19 1>${i}/${i}.peakAnn.xls 2>${i}/${i}.annLog.txt
+
+EOF
+done
+
+#Super-enhancer identification
+python ROSE_main.py -g HG19 -i ${i}_PE_SE.bed -r ${i}.rmdup.sort.bam -o ${i}_SE -s 12500 -t 2000
+python ROSE_geneMapper.py -i ${i}_SE/${i}_PE_SE_AllEnhancers.table.txt -g hg19 -o ${i}_SE 2>${i}_SE/${i}_enhancer_anno.log
+
+#CRC TF network construction
+coltron -e ${i}_PE_SE_AllEnhancers.table.txt -b ${i}.rmdup.sort.bam -g HG19 -o ${i}_CRC -n ${i}
