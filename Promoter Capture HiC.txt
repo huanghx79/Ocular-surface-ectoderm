@@ -1,0 +1,4 @@
+####Promoter Capture HiC Analysis
+hicup --config hicup_AOE.conf
+bam2chicago.sh AOE.hicup.bam Digest_Human_HindIII_baits_ID.baitmap_4col.chr.txt Digest_Human_HindIII.chr.rmap AOE
+runChicago.R --design-dir human_hg19_HindIII_design/ --cutoff 5 --export-format interBed,washU_text AOE/AOE.chinput AOE_hindIII_cutoff5
