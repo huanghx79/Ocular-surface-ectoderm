@@ -1,0 +1,233 @@
+### Single Cell analysis
+#Mouse scRNA Analysis
+library(Seurat)
+library(patchwork)
+library(harmony)
+library(RColorBrewer)
+library(tidyverse)
+library(reshape2)
+library(SingleR)
+library(Seurat)
+library(tidyverse)
+library(patchwork)
+library(monocle)
+library(monocle3)
+library(SeuratWrappers)
+library(ggplot2)
+library(magrittr)
+library(dplyr)
+
+
+E6P5_E8P5_EPI_SE <- readRDS("Mouse_embryo_Epblast_SurfaceEctoderm.rds")
+Idents(E6P5_E8P5_EPI_SE) <- "stage"
+E6P5_E7P5_cells <- subset(E6P5_E8P5_EPI_SE, idents=c("E6.5", "E7.5"))
+E8P5_10P5 <- readRDS("EyeRegion_E8P5_10P5.rds")
+Count1 <- E6P5_E7P5_cells@assays$RNA$counts
+anno1 <- E6P5_E7P5_cells@meta.data
+Count2 <- E8P5_10P5@assays$RNA$counts
+anno2 <- E8P5_10P5@meta.data
+Seu1 <- CreateSeuratObject(counts = Count1,meta.data = anno1,project = "E6P5_E7P5", min.cells = 3, min.features = 200)
+Seu2 <- CreateSeuratObject(counts = Count2,meta.data = anno2,project = "E8P5_10P5", min.cells = 3, min.features = 200)
+seurat_combined <- merge(Seu1, y = Seu2)
+seurat_combined <- NormalizeData(seurat_combined, normalization.method = "LogNormalize", scale.factor = 1e4)
+seurat_combined <- FindVariableFeatures(seurat_combined, selection.method = 'vst', nfeatures = 2000)
+seurat_combined <- ScaleData(seurat_combined)
+seurat_combined <- RunPCA(seurat_combined, features = VariableFeatures(object = seurat_combined))
+seurat_combined <- FindNeighbors(seurat_combined, dims = 1:15)
+seurat_combined<- FindClusters(seurat_combined, resolution = 0.6)
+seurat_combined <- RunUMAP(seurat_combined, dims = 1:10)
+DimPlot(seurat_combined, reduction = 'umap', label = T)
+DimPlot(seurat_combined, reduction = 'umap', group.by  = "stage" , label = T)
+seurat_combined <- JoinLayers(seurat_combined)
+combined2 <- seurat_combined %>% RunHarmony("stage", plot_convergence = T)
+ose2 <- SetIdent(combined2,value = "stage")
+ose2 <- ose2 %>% 
+  RunUMAP(reduction = "harmony", dims = 1:30, verbose = F) %>% 
+  RunTSNE(reduction = "harmony", dims = 1:30, verbose = F)  %>% 
+  FindNeighbors(reduction = "harmony", k.param = 10, dims = 1:30) %>% 
+  FindClusters(resolution = 0.3) %>% 
+  identity()
+ose2 <- SetIdent(ose2,value = "seurat_clusters")
+ncluster <- length(unique(ose2[[]]$seurat_clusters))
+mycol <- colorRampPalette(brewer.pal(8, "Set2"))(ncluster)
+DimPlot(ose2,label = T,cols = mycol, repel = T) 
+DimPlot(ose2, reduction = 'umap', label = T)
+DimPlot(ose2, reduction = 'umap', group.by  = "stage" , label = T)
+genes <- c("Trp63", "Pax6", "Prox1","Pitx3","Dlx5","Pou5f1")
+genes[genes %in% rownames(seurat_obj)]
+genes[!genes %in% rownames(seurat_obj)]
+FeaturePlot(seurat_obj,features = genes,reduction = "harmony",cols = c("lightgrey", "red"),ncol = 3)
+ose2 <- SetIdent(ose2,value = "cell_types")
+ose2_cell_type_marker <- FindAllMarkers(ose2, min.pct = 0.25,logfc.threshold = 0.25)
+
+### Pseudotime trajectory analysis
+##monocle3
+expression_matrix <- GetAssayData(ose2, assay = "RNA", layer = "counts")
+cell_metadata <- ose2@meta.data
+gene_annotation <- data.frame(gene_short_name = rownames(ose2))
+rownames(gene_annotation) <- rownames(ose2)
+cds <- new_cell_data_set(expression_matrix,
+                         cell_metadata = cell_metadata,
+                         gene_metadata = gene_annotation)
+cds <- preprocess_cds(cds, num_dim = 50)
+cds@int_colData$reducedDims$UMAP <- Embeddings(ose2, reduction = "harmony")
+cds@clusters$UMAP$clusters <- ose2$seurat_clusters
+names(cds@clusters$UMAP$clusters) <- colnames(cds)
+recreate.partition <- c(rep(1, length(colnames(cds))))
+names(recreate.partition) <- colnames(cds)
+recreate.partition <- as.factor(recreate.partition)
+cds@clusters$UMAP$partitions <- recreate.partition
+cds <- learn_graph(cds, 
+                   use_partition = TRUE,
+                   close_loop = FALSE,
+                   learn_graph_control = list(
+                     ncenter = 140,                   
+                     minimal_branch_len = 6,           
+                     prune_graph = TRUE,                
+                     orthogonal_proj_tip = FALSE,        
+                     geodesic_distance_ratio = 1/3,      
+                     euclidean_distance_ratio = 1        
+                   ))
+plot_cells(cds,color_cells_by = "stage",label_groups_by_cluster = FALSE,label_leaves = TRUE,label_branch_points = TRUE)
+cds <- order_cells(cds, root_pr_nodes = get_earliest_principal_node(cds, celltype = "0"))
+plot_cells(cds,
+                 color_cells_by = "pseudotime",
+                 label_cell_groups = FALSE,
+                 label_leaves = FALSE,
+                 label_branch_points = FALSE,
+                 graph_label_size = 1.5)
+
+##monocle2
+MS_ct2 <- ose2@assays$RNA$counts
+gene_ann <- data.frame(gene_short_name = row.names(MS_ct2), row.names = row.names(MS_ct2))
+fd <- new("AnnotatedDataFrame",data=gene_ann)
+pd <- new("AnnotatedDataFrame",data=ose2@meta.data)
+MS_cds <- newCellDataSet(
+  MS_ct2, 
+  phenoData = pd,
+  featureData =fd,
+  expressionFamily = negbinomial.size(),
+  lowerDetectionLimit=1)
+  
+MS_cds <- estimateSizeFactors(MS_cds)
+MS_cds <- estimateDispersions(MS_cds)
+MS_cds <- detectGenes(MS_cds, min_expr = 0.1) 
+clustering_DEG_genes <- differentialGeneTest(MS_cds, fullModelFormulaStr = '~ose', cores = 4)
+ordering_genes <- row.names(clustering_DEG_genes)[order(clustering_DEG_genes$qval)][1:50]
+MS_cds <- setOrderingFilter(MS_cds, ordering_genes)
+plot_ordering_genes(MS_cds)
+MS_cds <-reduceDimension (MS_cds,max_components =2, method = 'DDRTree')
+MS_cds <- orderCells(MS_cds)
+gs <- c("Pou5f1","Trp63","Dlx5","Msx2","Pitx3","Prox1","Krt8","Pax6")
+plot_cell_trajectory(MS_cds,markers = gs, use_color_gradient = T)
+plot_cell_trajectory(MS_cds,color_by = "Pseudotime")
+plot_cell_trajectory(MS_cds,color_by = "stage")
+
+
+###Human single cell data
+library(harmony)
+Human_embryo <- readRDS("Human_embryo.rds")
+Human_embryo <- SetIdent(Human_embryo,value = "stage")
+CS1216 = Human_embryo[,Human_embryo@meta.data$stage %in% c("CS15-16" , "CS12") ]
+CS1216 <- SetIdent(CS1216,value = "tissue")
+CS1216head = CS1216[,CS1216@meta.data$tissue %in% c("head-upperTrunk","head")]
+CS1216head <- NormalizeData(CS1216head, normalization.method = "LogNormalize", scale.factor = 1e4)
+CS1216head <- FindVariableFeatures(CS1216head, selection.method = 'vst', nfeatures = 2000)
+CS1216head <- ScaleData(CS1216head, features = VariableFeatures(object = CS1216head))
+CS1216head <- RunPCA(CS1216head, features = VariableFeatures(object = CS1216head))
+CS1216head <- FindNeighbors(CS1216head, dims = 1:15)
+CS1216head <- FindClusters(CS1216head, resolution = 0.3)
+CS1216head <- RunUMAP(CS1216head, dims = 1:10)
+DimPlot(CS1216head, reduction = 'umap')
+VlnPlot(CS1216head, features = c("TP63","KRT8", "KRT18","PAX6","SIX3","HESX1","DLX5","OTX2"))
+jj = FeaturePlot(CS1216head, features=c("TP63","KRT8", "KRT18","PAX6","SIX3","HESX1","DLX5","OTX2","LHX5","TFAP2A","TFAP2C"), cols = c("grey", "red"),order = T)+
+  theme_bw()+
+  theme(panel.background = element_blank(),
+        panel.grid = element_blank())
+CS1216head <- SetIdent(CS1216head,value = "seurat_clusters")
+CS1216_SE = CS1216head[,CS1216head@meta.data$seurat_clusters %in% 8]
+CS1216_SE <- NormalizeData(CS1216_SE, normalization.method = "LogNormalize", scale.factor = 1e4)
+CS1216_SE <- FindVariableFeatures(CS1216_SE, selection.method = 'vst', nfeatures = 2000)
+CS1216_SE <- ScaleData(CS1216_SE, features = VariableFeatures(object = Epithelium))
+CS1216_SE <- RunPCA(CS1216_SE, features = VariableFeatures(object = Epithelium))
+CS1216_SE <- FindNeighbors(CS1216_SE, dims = 1:15)
+CS1216_SE <- FindClusters(CS1216_SE, resolution = 0.5)
+CS1216_SE <- RunUMAP(CS1216_SE, dims = 1:10)
+DimPlot(CS1216_SE, reduction = 'umap')
+
+
+CS7 <- readRDS("CS7.rds")
+CS7t <- t(CS7)
+CS7t <- as(CS7t,"sparCS7tMatrix")
+CS7t <- CreateCS7turatObject(counts = CS7t,project = "CS7", min.cells = 3, min.features = 200)
+CS7t <- NormalizeData(CS7t, normalization.method = "LogNormalize", scale.factor = 1e4)
+CS7t <- FindVariableFeatures(CS7t, CS7tlection.method = 'vst', nfeatures = 2000)
+CS7t <- ScaleData(CS7t)
+CS7t <- RunPCA(CS7t, features = VariableFeatures(object = CS7t))
+CS7t <- FindNeighbors(CS7t, dims = 1:15)
+CS7t <- FindClusters(CS7t, resolution = 0.5)
+CS7t <- RunUMAP(CS7t, dims = 1:10)
+DimPlot(CS7t, reduction = 'umap', label = T)
+jj = FeaturePlot(CS7t, reduction = 'umap',features=c("NANOG","SOX2","POU5F1","DPPA4"), cols = c("grey", "#0072B2"),order = T)+
+  theme_bw()+
+  theme(panel.background = element_blank(),
+        panel.grid = element_blank())
+EPi <- subset(x = CS7t, idents = "2")
+DimPlot(EPi, reduction = 'umap', label = T)
+
+Count1 <- CS1216_SE@assays$RNA$counts
+anno <- CS1216_SE@meta.data
+Count2 <- EPi@assays$RNA$counts
+Seu1 <- CreateSeuratObject(counts = Count1,meta.data = anno,project = "SE", min.cells = 3, min.features = 200)
+Seu2 <- CreateSeuratObject(counts = Count2,project = "EPi", min.cells = 3, min.features = 200)
+Seu2[["stage"]] <- "CS7"
+seurat_combined <- merge(Seu1, y = Seu2)
+seurat_combined <- NormalizeData(seurat_combined, normalization.method = "LogNormalize", scale.factor = 1e4)
+seurat_combined <- FindVariableFeatures(seurat_combined, selection.method = 'vst', nfeatures = 2000)
+seurat_combined <- ScaleData(seurat_combined)
+seurat_combined <- RunPCA(seurat_combined, features = VariableFeatures(object = seurat_combined))
+seurat_combined <- FindNeighbors(seurat_combined, dims = 1:15)
+seurat_combined<- FindClusters(seurat_combined, resolution = 0.6)
+seurat_combined <- RunUMAP(seurat_combined, dims = 1:10)
+DimPlot(seurat_combined, reduction = 'umap', label = T)
+seurat_combined <- JoinLayers(seurat_combined)
+combined2 <- seurat_combined %>% 
+  RunHarmony("stage", plot_convergence = T)
+ose2 <- ose2 %>% 
+  RunUMAP(reduction = "harmony", dims = 1:30, verbose = F) %>% 
+  RunTSNE(reduction = "harmony", dims = 1:30, verbose = F)  %>% 
+  FindNeighbors(reduction = "harmony", k.param = 10, dims = 1:30) %>% 
+  FindClusters(resolution = 0.6) %>% 
+  identity()
+
+ose2 <- SetIdent(ose2,value = "seurat_clusters")
+ncluster <- length(unique(ose2[[]]$seurat_clusters))
+mycol <- colorRampPalette(brewer.pal(8, "Set2"))(ncluster)
+DimPlot(ose2,label = T, cols = mycol, repel = T) 
+
+### Pseudotime trajectory analysis
+ct2 <- ose2@assays$RNA$counts
+gene_ann <- data.frame(
+gene_short_name = row.names(ct2), 
+  row.names = row.names(ct2)
+)
+fd <- new("AnnotatedDataFrame",
+          data=gene_ann)
+pd <- new("AnnotatedDataFrame",
+          data=ose2@meta.data)
+sc_cds <- newCellDataSet(
+  ct2, 
+  phenoData = pd,
+  featureData =fd,
+  expressionFamily = negbinomial.size(),
+  lowerDetectionLimit=1)
+sc_cds <- estimateSizeFactors(sc_cds)
+sc_cds <- estimateDispersions(sc_cds)
+sc_cds <- setOrderingFilter(sc_cds, OSE_genes)
+plot_ordering_genes(sc_cds)
+sc_cds <-reduceDimension (sc_cds,max_components =3, method = 'DDRTree')
+sc_cds <- orderCells(sc_cds)
+plot_cell_trajectory(sc_cds)+scale_color_nejm()
+plot_cell_trajectory(sc_cds,color_by = "Pseudotime")
+plot_cell_trajectory(sc_cds,color_by = "seurat_clusters")
+plot_cell_trajectory(sc_cds,color_by = "stage")
