@@ -1,31 +1,125 @@
-### Single Cell analysis
-#Mouse scRNA Analysis
 library(Seurat)
-library(patchwork)
+library(dplyr)
+library(Matrix)
+library(ggplot2)
+library(DoubletFinder)
+library(reshape2)
+library(stringr)
+library(mclust)
+library(SingleCellExperiment)
+library(scater)
+library(plyr)
 library(harmony)
+library(patchwork)
 library(RColorBrewer)
 library(tidyverse)
-library(reshape2)
 library(SingleR)
-library(Seurat)
 library(tidyverse)
-library(patchwork)
 library(monocle)
 library(monocle3)
 library(SeuratWrappers)
-library(ggplot2)
 library(magrittr)
-library(dplyr)
+
+countsFile = c(Sample1 = "/Eye10P5",
+               Sample2 = "/Eye8P5_9P5")
+genecolumn = 2
+prefix = "E8P5_10P5_MergedProject"
+cellMinGene = 200
+cellMaxGene = 10000
+geneExpMinCell = 3
+MaxMTPercent = 0.2
+ScaleModel = "linear"
+regressOut = "nCount_RNA,percent.mito"
+
+pcadim = 1:10
+computePCs = 50
+nneighbors = 30
+varGeneNum = 2000
+
+Doubletrate = 0.1
+pc.num_doublet = 1:10
+pN = 0.25
+doublet_resolution = 0.4
+
+theta = 2
+lambda = 1
+resolution = 0.4
+
+countsList = list()
+for(sn in names(countsFile)){
+	tmp = Read10X(data.dir = countsFile[sn], gene.column = genecolumn)
+	colnames(tmp) = paste0(sn, "_", colnames(tmp))
+	countsList[[sn]] = tmp
+}
+
+allcounts = countsList[[1]]
+if(length(countsList) > 1){
+	for(i in 2:length(countsList)){
+		allcounts = RowMergeSparseMatrices(allcounts, countsList[[i]])
+	}
+}
+
+cellSampleInfo = data.frame(
+	cellBarcode = colnames(allcounts),
+	sample = sapply(strsplit(colnames(allcounts), "_"), function(x) x[1])
+)
+rownames(cellSampleInfo) = cellSampleInfo$cellBarcode
+allcounts = allcounts[,colSums(allcounts)>0,drop=F]
+mito.genes = read.table("/MT.txt", sep = "\t", header = FALSE)[,1]
+mito.genes = m```r
+mito.genes = mito.genes[is.finite(match(mito.genes,rownames(allcounts)))]
+percent.mito <- Matrix::colSums(allcounts[mito.genes, ])/Matrix::colSums(allcounts)
+seuset <- CreateSeuratObject(counts = allcounts, project = prefix, min.cells = geneExpMinCell, min.features = 1)
+seuset <- AddMetaData(seuset, metadata = cellSampleInfo[colnames(seuset),"sample"], col.name = "sample")
+seuset <- subset(seuset, features = setdiff(row.names(seuset), mito.genes))
+seuset <- AddMetaData(seuset, metadata = percent.mito, col.name = "percent.mito")
+seuset <- subset(x = seuset, subset = nFeature_RNA > cellMinGene & nFeature_RNA < cellMaxGene)
+seuset <- subset(x = seuset, subset = percent.mito < MaxMTPercent)
+
+seuset_doublet <- seuset
+seuset_doublet <- NormalizeData(seuset_doublet, normalization.method = "LogNormalize", scale.factor = 10000)
+seuset_doublet <- FindVariableFeatures(seuset_doublet, selection.method = "vst", nfeatures = 2000)
+seuset_doublet <- ScaleData(seuset_doublet, features = VariableFeatures(seuset_doublet))
+seuset_doublet <- RunPCA(seuset_doublet, verbose = F)
+seuset_doublet <- RunUMAP(seuset_doublet, dims = pc.num_doublet)
+seuset_doublet <- FindNeighbors(seuset_doublet, dims = pc.num_doublet) %>% FindClusters(resolution = doublet_resolution)
+sweep.res.list <- paramSweep_v3(seuset_doublet, PCs = pc.num_doublet)
+sweep.stats <- summarizeSweep(sweep.res.list, GT = FALSE)
+bcmvn <- find.pK(sweep.stats)
+pK_bcmvn <- as.numeric(as.character(bcmvn$pK[which.max(bcmvn$BCmetric)]))
+homotypic.prop <- modelHomotypic(seuset_doublet$seurat_clusters)
+nExp_poi <- round(Doubletrate * ncol(seuset_doublet))
+nExp_poi.adj <- round(nExp_poi * (1 - homotypic.prop))
+seuset_doublet <- doubletFinder_v3(seuset_doublet, PCs = pc.num_doublet, pN = pN, pK = pK_bcmvn,
+                                     nExp = nExp_poi.adj, reuse.pANN = F)
+df_col <- tail(grep("^DF.classifications", colnames(seuset_doublet@meta.data), value = TRUE), 1)
+doublet_cells <- colnames(seuset_doublet)[seuset_doublet@meta.data[[df_col]] == "Doublet"]
+seuset <- subset(seuset, cells = setdiff(colnames(seuset), doublet_cells))
+
+seuset <- NormalizeData(seuset, normalization.method = "LogNormalize", scale.factor = 10000)
+seuset <- FindVariableFeatures(seuset, selection.method = "vst", nfeatures = varGeneNum)
+scalegene = VariableFeatures(seuset)
+seuset <- ScaleData(object = seuset, features = scalegene, vars.to.regress = regressOut, model.use = ScaleModel)
+seuset <- RunPCA(object = seuset, features = VariableFeatures(seuset), npcs = computePCs, do.print = TRUE, ndims.print = 1:computePCs, nfeatures.print = 10)
+seuset = RunHarmony(seuset, "sample", assay.use = DefaultAssay(seuset), theta = theta, lambda = lambda)
+seuset <- RunUMAP(seuset, dims = pcadim, n.neighbors = nneighbors, reduction = "harmony")
+seuset <- FindNeighbors(seuset, reduction = "harmony", dims = pcadim)
+seuset <- FindClusters(seuset, resolution = resolution)
+E8P5_10P5_SE <- subset(x = seuset, idents = "7")
+saveRDS(E8P5_10P5_SE, file="./E8P5_10P5_SE.Harmony.rds"
 
 
+### Single-Cell Integrated Analysis
+
+##Mouse
 E6P5_E8P5_EPI_SE <- readRDS("Mouse_embryo_Epblast_SurfaceEctoderm.rds")
 Idents(E6P5_E8P5_EPI_SE) <- "stage"
 E6P5_E7P5_cells <- subset(E6P5_E8P5_EPI_SE, idents=c("E6.5", "E7.5"))
-E8P5_10P5 <- readRDS("EyeRegion_E8P5_10P5.rds")
+E8P5_10P5_SE <- readRDS("E8P5_10P5_SE.Harmony.rds")
 Count1 <- E6P5_E7P5_cells@assays$RNA$counts
 anno1 <- E6P5_E7P5_cells@meta.data
-Count2 <- E8P5_10P5@assays$RNA$counts
-anno2 <- E8P5_10P5@meta.data
+Count2 <- E8P5_10P5_SE@assays$RNA$counts
+anno2 <- E8P5_10P5_SE@meta.data
 Seu1 <- CreateSeuratObject(counts = Count1,meta.data = anno1,project = "E6P5_E7P5", min.cells = 3, min.features = 200)
 Seu2 <- CreateSeuratObject(counts = Count2,meta.data = anno2,project = "E8P5_10P5", min.cells = 3, min.features = 200)
 seurat_combined <- merge(Seu1, y = Seu2)
@@ -60,8 +154,6 @@ FeaturePlot(seurat_obj,features = genes,reduction = "harmony",cols = c("lightgre
 ose2 <- SetIdent(ose2,value = "cell_types")
 ose2_cell_type_marker <- FindAllMarkers(ose2, min.pct = 0.25,logfc.threshold = 0.25)
 
-### Pseudotime trajectory analysis
-##monocle3
 expression_matrix <- GetAssayData(ose2, assay = "RNA", layer = "counts")
 cell_metadata <- ose2@meta.data
 gene_annotation <- data.frame(gene_short_name = rownames(ose2))
@@ -97,7 +189,7 @@ plot_cells(cds,
                  label_branch_points = FALSE,
                  graph_label_size = 1.5)
 
-##monocle2
+
 MS_ct2 <- ose2@assays$RNA$counts
 gene_ann <- data.frame(gene_short_name = row.names(MS_ct2), row.names = row.names(MS_ct2))
 fd <- new("AnnotatedDataFrame",data=gene_ann)
@@ -112,9 +204,7 @@ MS_cds <- newCellDataSet(
 MS_cds <- estimateSizeFactors(MS_cds)
 MS_cds <- estimateDispersions(MS_cds)
 MS_cds <- detectGenes(MS_cds, min_expr = 0.1) 
-clustering_DEG_genes <- differentialGeneTest(MS_cds, fullModelFormulaStr = '~ose', cores = 4)
-ordering_genes <- row.names(clustering_DEG_genes)[order(clustering_DEG_genes$qval)][1:50]
-MS_cds <- setOrderingFilter(MS_cds, ordering_genes)
+MS_cds <- setOrderingFilter(MS_cds, clustering_DEG_genes)
 plot_ordering_genes(MS_cds)
 MS_cds <-reduceDimension (MS_cds,max_components =2, method = 'DDRTree')
 MS_cds <- orderCells(MS_cds)
@@ -124,7 +214,7 @@ plot_cell_trajectory(MS_cds,color_by = "Pseudotime")
 plot_cell_trajectory(MS_cds,color_by = "stage")
 
 
-###Human single cell data
+###Human
 library(harmony)
 Human_embryo <- readRDS("Human_embryo.rds")
 Human_embryo <- SetIdent(Human_embryo,value = "stage")
@@ -154,7 +244,6 @@ CS1216_SE <- FindNeighbors(CS1216_SE, dims = 1:15)
 CS1216_SE <- FindClusters(CS1216_SE, resolution = 0.5)
 CS1216_SE <- RunUMAP(CS1216_SE, dims = 1:10)
 DimPlot(CS1216_SE, reduction = 'umap')
-
 
 CS7 <- readRDS("CS7.rds")
 CS7t <- t(CS7)
