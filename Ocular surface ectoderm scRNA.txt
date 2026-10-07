@@ -154,6 +154,7 @@ FeaturePlot(seurat_obj,features = genes,reduction = "harmony",cols = c("lightgre
 ose2 <- SetIdent(ose2,value = "cell_types")
 ose2_cell_type_marker <- FindAllMarkers(ose2, min.pct = 0.25,logfc.threshold = 0.25)
 
+###Monocle3
 expression_matrix <- GetAssayData(ose2, assay = "RNA", layer = "counts")
 cell_metadata <- ose2@meta.data
 gene_annotation <- data.frame(gene_short_name = rownames(ose2))
@@ -189,7 +190,7 @@ plot_cells(cds,
                  label_branch_points = FALSE,
                  graph_label_size = 1.5)
 
-
+###Monocle2
 MS_ct2 <- ose2@assays$RNA$counts
 gene_ann <- data.frame(gene_short_name = row.names(MS_ct2), row.names = row.names(MS_ct2))
 fd <- new("AnnotatedDataFrame",data=gene_ann)
@@ -200,11 +201,15 @@ MS_cds <- newCellDataSet(
   featureData =fd,
   expressionFamily = negbinomial.size(),
   lowerDetectionLimit=1)
-  
 MS_cds <- estimateSizeFactors(MS_cds)
 MS_cds <- estimateDispersions(MS_cds)
 MS_cds <- detectGenes(MS_cds, min_expr = 0.1) 
-MS_cds <- setOrderingFilter(MS_cds, clustering_DEG_genes)
+clustering_DEG_genes <-
+differentialGeneTest(MS_cds,
+                       fullModelFormulaStr = '~ose',
+                       cores = 4)
+ordering_genes <-  read.table("/top_clustering_DEG_genes.txt", sep = "\t", header = FALSE)
+MS_cds <- setOrderingFilter(MS_cds, ordering_genes)
 plot_ordering_genes(MS_cds)
 MS_cds <-reduceDimension (MS_cds,max_components =2, method = 'DDRTree')
 MS_cds <- orderCells(MS_cds)
@@ -215,7 +220,6 @@ plot_cell_trajectory(MS_cds,color_by = "stage")
 
 
 ###Human
-library(harmony)
 Human_embryo <- readRDS("Human_embryo.rds")
 Human_embryo <- SetIdent(Human_embryo,value = "stage")
 CS1216 = Human_embryo[,Human_embryo@meta.data$stage %in% c("CS15-16" , "CS12") ]
